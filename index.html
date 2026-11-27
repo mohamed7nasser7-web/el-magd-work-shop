@@ -197,14 +197,51 @@ var unitPriceOf=function(e,p){return e.unitPrice>0?e.unitPrice:(p?p.price:0)};
 function loadLocal(){try{var j=JSON.parse(localStorage.getItem(LS)||'null');if(j){COLS.forEach(function(c){if(Array.isArray(j[c]))data[c]=j[c]});data.settings=j.settings||null}}catch(e){}}
 function persist(){try{localStorage.setItem(LS,JSON.stringify(data))}catch(e){}}
 
-function explain(x){var c=x&&x.code;
+function explain(x){if(x&&x.userMsg)return x.userMsg;var c=x&&x.code;
   if(c==='invalid_argument')return 'مفيش صلاحية تعديل على الصفحة دي. اطلب صلاحية Contributor أو أعلى.';
   if(c==='quota_exceeded')return 'مساحة التخزين اتملت.';
   return 'حصلت مشكلة في الحفظ. جرّب تاني.'}
-async function addDoc(c,o){if(db){await db.collection(c).add(o)}else{var d=Object.assign({id:uid()},o);data[c].push(d);persist();render()}}
-async function setDoc(c,id,o){if(db){await db.doc(c+'/'+id).set(o)}else{data[c]=data[c].map(function(x){return x.id===id?Object.assign({id:id},o):x});persist();render()}}
-async function delDoc(c,id){if(db){await db.doc(c+'/'+id).delete()}else{data[c]=data[c].filter(function(x){return x.id!==id});persist();render()}}
-async function saveSettings(s){if(db){await db.doc('app/settings').set(s)}else{data.settings=s;persist();render()}}
+var cfg=null,queue=[],seq=0,syncing=false;
+try{cfg=JSON.parse(localStorage.getItem('majd-sync-v1')||'null')}catch(e){cfg=null}
+try{queue=JSON.parse(localStorage.getItem('majd-queue-v1')||'[]')}catch(e){queue=[]}
+if(!Array.isArray(queue))queue=[];
+function saveQueue(){try{localStorage.setItem('majd-queue-v1',JSON.stringify(queue))}catch(e){}}
+function enq(op){seq++;if(cfg){queue.push(op);saveQueue();if(mode!=='ok')mode='wait';sync()}}
+async function addDoc(c,o){var id=uid();data[c].push(Object.assign({id:id},o));persist();enq({t:'set',c:c,id:id,o:o});render()}
+async function setDoc(c,id,o){data[c]=data[c].map(function(x){return x.id===id?Object.assign({id:id},o):x});persist();enq({t:'set',c:c,id:id,o:o});render()}
+async function delDoc(c,id){data[c]=data[c].filter(function(x){return x.id!==id});persist();enq({t:'del',c:c,id:id});render()}
+async function saveSettings(s){data.settings=s;persist();enq({t:'settings',o:s});render()}
+
+/* ---------- Google Drive sync (Apps Script) ---------- */
+async function call(ops){
+  var ac=new AbortController(),t=setTimeout(function(){ac.abort()},25000);
+  try{
+    var r=await fetch(cfg.u,{method:'POST',body:JSON.stringify({key:cfg.k,ops:ops}),signal:ac.signal});
+    var j=await r.json();
+    if(!j.ok){var e=new Error(j.error);e.auth=(j.error==='auth');throw e}
+    return j.state;
+  }finally{clearTimeout(t)}
+}
+function applyState(st){
+  data.settings=st.settings||null;
+  COLS.forEach(function(c){data[c]=Array.isArray(st[c])?st[c]:[]});
+  persist();
+}
+async function sync(){
+  if(!cfg||syncing)return;
+  syncing=true;
+  try{
+    for(;;){
+      var s0=seq,ops=queue.slice(0);
+      var st=await call(ops);
+      queue.splice(0,ops.length);saveQueue();
+      if(queue.length||seq!==s0)continue;
+      applyState(st);break;
+    }
+    mode='ok';
+  }catch(e){mode=(e&&e.auth)?'auth':'late'}
+  syncing=false;render();
+}
 var clone=function(o){return JSON.parse(JSON.stringify(o))};
 
 /* ---------- calculations ---------- */
@@ -268,6 +305,7 @@ function vSummary(){
   if(s.unallocated>0)notes.push('فيه مرتبات ومصروفات '+M(s.unallocated)+' ج.م ومفيش إنتاج في الشهر ده، فاتخصمت من الربح كلها.');
   notes.push('المرتبات والمصروفات بتتوزع على المنتجات بنسبة عدد القطع المنتجة في الشهر.');
   out.push('<p class="muted" style="margin:0">'+notes.join(' ')+'</p>');
+  out.push(cfg?'<section class="card"><h2>جوجل درايف</h2><p class="muted" style="margin:0">'+(mode==='ok'?'البيانات متزامنة مع ملف في الدرايف بتاعك.':mode==='auth'?'الكود السري غلط. افصل الربط واربط تاني.':'بيحاول يتصل بالدرايف.'+(queue.length?' فيه '+queue.length+' تعديل مستنيين يترفعوا.':''))+'</p><div class="pf"><button class="btn" data-act="share-link" style="flex:1">كود الربط</button><button class="btn danger" data-act="unlink" style="flex:1">فصل</button></div></section>':'<section class="card"><h2>ربط جوجل درايف</h2><p class="muted" style="margin:0">اربط التطبيق بملف في الدرايف بتاعك عشان البيانات تظهر على أي موبايل.</p><button class="btn primary wide" data-act="link">ربط جوجل درايف</button></section>');
   out.push('<section class="card"><h2>نسخة احتياطية</h2><p class="muted" style="margin:0">البيانات محفوظة على الموبايل ده. خد نسخة بين وقت والتاني، وتقدر تستوردها على موبايل تاني.</p><div class="pf"><button class="btn" data-act="export" style="flex:1">تصدير نسخة</button><button class="btn" data-act="import" style="flex:1">استيراد نسخة</button></div></section>');
   return out.join('');
 }
@@ -333,7 +371,7 @@ function render(){
   $('#tabs').innerHTML=TABS.map(function(t){return '<a class="tab'+(t[0]===tab?' on':'')+'" href="#'+t[0]+'"'+(t[0]===tab?' aria-current="page"':'')+'><svg viewBox="0 0 24 24" aria-hidden="true">'+t[2]+'</svg>'+t[1]+'</a>'}).join('');
   $('#view').innerHTML=VIEWS[tab]();
   var c=$('#sync');
-  var map={wait:['بيحمّل…',''],ok:['متزامن','ok'],local:['محفوظ على الجهاز','ok'],late:['مش واصل للبيانات','warn']};
+  var map={wait:[cfg?'بيزامن…':'بيحمّل…',''],ok:['متزامن مع درايف','ok'],local:['على الجهاز بس',''],late:['مش واصل (هيعيد المحاولة)','warn'],auth:['الكود السري غلط','warn']};
   c.textContent=map[mode][0];c.className='chip '+map[mode][1];
 }
 
@@ -458,6 +496,9 @@ document.addEventListener('click',async function(e){
   if(a==='close')closeSheet();
   else if(a==='export')exportData();
   else if(a==='import')$('#impfile').click();
+  else if(a==='link')openLink();
+  else if(a==='share-link')openShare();
+  else if(a==='unlink')openUnlink();
   else if(a==='add-prod')openProduction();
   else if(a==='add-sale')openSale();
   else if(a==='add-exp')openExpense();
@@ -478,6 +519,42 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!$('#sheet'
 function readHash(){var h=location.hash.slice(1);tab=VIEWS[h]?h:'summary';armed=null;render();window.scrollTo(0,0)}
 window.addEventListener('hashchange',readHash);
 
+
+/* ---------- Drive link UI ---------- */
+function b64e(o){return btoa(JSON.stringify(o))}
+function b64d(s){try{return JSON.parse(atob(String(s).trim()))}catch(e){return null}}
+function openLink(){
+  openSheet({title:'ربط جوجل درايف',cta:'ربط',fields:[
+    {id:'code',label:'كود الربط (لو معاك من موبايل تاني)',type:'text',hint:'لو لصقته مش محتاج تكتب الرابط والكود السري.'},
+    {id:'url',label:'رابط الـ Web App',type:'text',ph:'https://script.google.com/macros/s/.../exec'},
+    {id:'key',label:'الكود السري',type:'text'}],
+    validate:function(v){
+      if(v.code){var c=b64d(v.code);return (c&&c.u&&c.k)?'':'كود الربط غير صحيح'}
+      if(!/^https:\/\/script\.google\.com\//.test(v.url))return 'الرابط لازم يبدأ بـ https://script.google.com/';
+      if(!v.key)return 'اكتب الكود السري';return ''},
+    onInput:function(get,set,prev){prev('لو الموبايل ده فيه بيانات هتترفع وتتضاف على الموجود في الدرايف.')},
+    onSave:async function(v){
+      var c=v.code?b64d(v.code):{u:v.url,k:v.key},old=cfg;
+      cfg={u:c.u,k:c.k};
+      try{await call([])}catch(e){cfg=old;throw {userMsg:e&&e.auth?'الكود السري غلط.':'مقدرش يوصل للرابط. اتأكد من الرابط ومن إن النشر مضبوط على Anyone.'}}
+      try{localStorage.setItem('majd-sync-v1',JSON.stringify(cfg))}catch(e){}
+      queue=[];
+      COLS.forEach(function(col){data[col].forEach(function(r){var o=Object.assign({},r);delete o.id;queue.push({t:'set',c:col,id:r.id,o:o})})});
+      if(data.settings)queue.push({t:'settings',o:data.settings});
+      saveQueue();seq++;mode='wait';sync();render();
+    }});
+}
+function openShare(){
+  var code=b64e(cfg);
+  openSheet({title:'كود الربط',cta:'نسخ الكود',fields:[
+    {id:'code',label:'الصق الكود ده في «ربط جوجل درايف» على الموبايل التاني',type:'text',value:code,hint:'الكود ده سري، متبعتوش لحد غريب.'}],
+    onSave:async function(){try{await navigator.clipboard.writeText(code)}catch(e){throw {userMsg:'انسخ الكود من الخانة بإيدك.'}}}});
+}
+function openUnlink(){
+  openSheet({title:'فصل جوجل درايف',cta:'فصل',fields:[],
+    onInput:function(get,set,prev){prev('البيانات هتفضل على الموبايل ده ومش هتتزامن. الملف في الدرايف بيفضل زي ما هو.')},
+    onSave:async function(){cfg=null;queue=[];try{localStorage.removeItem('majd-sync-v1');localStorage.removeItem('majd-queue-v1')}catch(e){}mode='local';render()}});
+}
 
 /* ---------- backup ---------- */
 function exportData(){
@@ -502,10 +579,13 @@ document.addEventListener('change',function(e){
 if('serviceWorker' in navigator)window.addEventListener('load',function(){navigator.serviceWorker.register('./sw.js').catch(function(){})});
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
 loadLocal();readHash();
+setInterval(function(){if(cfg&&!document.hidden)sync()},20000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)sync()});
+window.addEventListener('online',function(){sync()});
 (async function(){
   var dbx=null;
   try{dbx=window.claude&&window.claude.use?await window.claude.use('db'):null}catch(e){dbx=null}
-  if(!dbx){mode='local';render();return}
+  if(!dbx){mode=cfg?'wait':'local';render();if(cfg)sync();return}
   db=dbx;data={settings:null,production:[],sales:[],expenses:[],workers:[]};
   var ready={},need=COLS.length+1,timer=setTimeout(function(){if(mode==='wait'){mode='late';render()}},10000);
   var mark=function(k,snap){if(!snap.metadata.fromCache){ready[k]=true;if(Object.keys(ready).length>=need){clearTimeout(timer);mode='ok'}}};
