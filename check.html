@@ -1,0 +1,20 @@
+<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>فحص التثبيت</title>
+<style>body{font:16px system-ui,sans-serif;padding:16px;line-height:1.7}li{margin:6px 0}.ok{color:#17744A}.no{color:#B42318;font-weight:700}</style>
+<h2>فحص تثبيت مشغل المجد</h2><ul id="o"></ul><p id="t"></p>
+<script>
+var o=document.getElementById('o');
+function add(ok,t){var l=document.createElement('li');l.className=ok?'ok':'no';l.textContent=(ok?'✓ ':'✗ ')+t;o.appendChild(l)}
+(async function(){
+ add(location.protocol==='https:','الصفحة على https');
+ var mj=null;
+ try{var r=await fetch('manifest.json',{cache:'no-store'});add(r.ok,'ملف manifest.json موجود (حالة '+r.status+')');if(r.ok)mj=await r.json()}catch(e){add(false,'ملف manifest.json مش موجود أو مش بيفتح')}
+ if(mj){add(!!mj.name,'الاسم موجود');add(!!mj.start_url,'start_url موجود');add(mj.display==='standalone','display=standalone')}
+ var icons=['icons/icon-192.png','icons/icon-512.png','icons/icon-maskable-512.png'];
+ for(var i=0;i<icons.length;i++){try{var q=await fetch(icons[i],{cache:'no-store'});add(q.ok,'الأيقونة '+icons[i]+' (حالة '+q.status+')')}catch(e){add(false,'الأيقونة '+icons[i]+' مش بتفتح')}}
+ try{var s=await fetch('sw.js',{cache:'no-store'});add(s.ok,'ملف sw.js موجود (حالة '+s.status+')')}catch(e){add(false,'ملف sw.js مش موجود')}
+ if('serviceWorker' in navigator){try{var reg=await navigator.serviceWorker.getRegistration();add(!!reg,'الـ service worker متسجل'+(reg?'':' (افتح الصفحة الرئيسية الأول وحدّث)'))}catch(e){add(false,'الـ service worker مش شغال')}}else add(false,'المتصفح مش بيدعم service worker');
+ var ua=navigator.userAgent;document.getElementById('t').textContent='المتصفح: '+ua;
+ if(/FBAN|FBAV|Instagram|WhatsApp|Line|; wv\)/i.test(ua))add(false,'انت فاتح من متصفح داخل تطبيق. افتح الرابط في Chrome (أندرويد) أو Safari (آيفون)');
+})();
+</script></html>
